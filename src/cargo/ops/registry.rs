@@ -186,7 +186,7 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
         opts.dry_run,
     )?;
     if !opts.dry_run {
-        let timeout = std::time::Duration::from_secs(60);
+        let timeout = std::time::Duration::from_secs(10);
         wait_for_publish(opts.config, reg_id, pkg, timeout)?;
     }
 

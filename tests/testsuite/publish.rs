@@ -100,6 +100,7 @@ fn validate_upload_foo_clean() {
 
 #[cargo_test]
 fn simple() {
+    // HACK below allows us to use a local registry
     let registry = registry::init();
 
     let p = project()
@@ -116,6 +117,15 @@ fn simple() {
         )
         .file("src/main.rs", "fn main() {}")
         .build();
+
+    // HACK: Inject `foo` directly into the index so `publish` won't block for it to be in
+    // the index.
+    //
+    // This is to ensure we can verify the Summary we post to the registry as doing so precludes
+    // the registry from processing the publish.
+    Package::new("foo", "0.0.1")
+        .file("src/lib.rs", "")
+        .publish();
 
     p.cargo("publish --no-verify")
         .replace_crates_io(registry.index_url())
@@ -697,6 +707,7 @@ The registry `alternative` is not listed in the `publish` value in Cargo.toml.
 
 #[cargo_test]
 fn publish_allowed_registry() {
+    // HACK below allows us to use a local registry
     registry::alt_init();
 
     let p = project().build();
@@ -719,6 +730,16 @@ fn publish_allowed_registry() {
         )
         .file("src/main.rs", "fn main() {}")
         .build();
+
+    // HACK: Inject `foo` directly into the index so `publish` won't block for it to be in
+    // the index.
+    //
+    // This is to ensure we can verify the Summary we post to the registry as doing so precludes
+    // the registry from processing the publish.
+    Package::new("foo", "0.0.1")
+        .file("src/lib.rs", "")
+        .alternative(true)
+        .publish();
 
     p.cargo("publish --registry alternative")
         .with_stderr(
@@ -747,6 +768,7 @@ fn publish_allowed_registry() {
 
 #[cargo_test]
 fn publish_implicitly_to_only_allowed_registry() {
+    // HACK below allows us to use a local registry
     registry::alt_init();
 
     let p = project().build();
@@ -769,6 +791,16 @@ fn publish_implicitly_to_only_allowed_registry() {
         )
         .file("src/main.rs", "fn main() {}")
         .build();
+
+    // HACK: Inject `foo` directly into the index so `publish` won't block for it to be in
+    // the index.
+    //
+    // This is to ensure we can verify the Summary we post to the registry as doing so precludes
+    // the registry from processing the publish.
+    Package::new("foo", "0.0.1")
+        .file("src/lib.rs", "")
+        .alternative(true)
+        .publish();
 
     p.cargo("publish")
         .with_stderr(
@@ -1034,6 +1066,7 @@ fn publish_with_no_default_features() {
 
 #[cargo_test]
 fn publish_with_patch() {
+    // HACK below allows us to use a local registry
     let registry = registry::init();
     Package::new("bar", "1.0.0").publish();
 
@@ -1076,6 +1109,15 @@ fn publish_with_patch() {
 
     // Remove the usage of new functionality and try again.
     p.change_file("src/main.rs", "extern crate bar; pub fn main() {}");
+
+    // HACK: Inject `foo` directly into the index so `publish` won't block for it to be in
+    // the index.
+    //
+    // This is to ensure we can verify the Summary we post to the registry as doing so precludes
+    // the registry from processing the publish.
+    Package::new("foo", "0.0.1")
+        .file("src/lib.rs", "")
+        .publish();
 
     p.cargo("publish")
         .replace_crates_io(registry.index_url())
@@ -1232,7 +1274,9 @@ include `--registry crates-io` to use crates.io
 // A dependency with both `git` and `version`.
 #[cargo_test]
 fn publish_git_with_version() {
+    // HACK below allows us to use a local registry
     let registry = registry::init();
+
     Package::new("dep1", "1.0.1")
         .file("src/lib.rs", "pub fn f() -> i32 {1}")
         .publish();
@@ -1273,6 +1317,16 @@ fn publish_git_with_version() {
         .build();
 
     p.cargo("run").with_stdout("2").run();
+
+    // HACK: Inject `foo` directly into the index so `publish` won't block for it to be in
+    // the index.
+    //
+    // This is to ensure we can verify the Summary we post to the registry as doing so precludes
+    // the registry from processing the publish.
+    Package::new("foo", "0.1.0")
+        .file("src/lib.rs", "")
+        .publish();
+
     p.cargo("publish --no-verify")
         .replace_crates_io(registry.index_url())
         .with_stderr(
@@ -1366,6 +1420,7 @@ fn publish_git_with_version() {
 
 #[cargo_test]
 fn publish_dev_dep_no_version() {
+    // HACK below allows us to use a local registry
     let registry = registry::init();
 
     let p = project()
@@ -1390,6 +1445,15 @@ fn publish_dev_dep_no_version() {
         .file("bar/Cargo.toml", &basic_manifest("bar", "0.0.1"))
         .file("bar/src/lib.rs", "")
         .build();
+
+    // HACK: Inject `foo` directly into the index so `publish` won't block for it to be in
+    // the index.
+    //
+    // This is to ensure we can verify the Summary we post to the registry as doing so precludes
+    // the registry from processing the publish.
+    Package::new("foo", "0.1.0")
+        .file("src/lib.rs", "")
+        .publish();
 
     p.cargo("publish --no-verify")
         .replace_crates_io(registry.index_url())
@@ -1845,6 +1909,7 @@ Caused by:
 
 #[cargo_test]
 fn in_package_workspace() {
+    // HACK below allows us to use a local registry
     let registry = registry::init();
 
     let p = project()
@@ -1872,6 +1937,13 @@ fn in_package_workspace() {
         )
         .file("li/src/main.rs", "fn main() {}")
         .build();
+
+    // HACK: Inject `foo` directly into the index so `publish` won't block for it to be in
+    // the index.
+    //
+    // This is to ensure we can verify the Summary we post to the registry as doing so precludes
+    // the registry from processing the publish.
+    Package::new("li", "0.0.1").file("src/lib.rs", "").publish();
 
     p.cargo("publish -p li --no-verify")
         .replace_crates_io(registry.index_url())
@@ -1943,6 +2015,7 @@ fn with_duplicate_spec_in_members() {
 
 #[cargo_test]
 fn in_package_workspace_with_members_with_features_old() {
+    // HACK below allows us to use a local registry
     let registry = registry::init();
 
     let p = project()
@@ -1969,6 +2042,13 @@ fn in_package_workspace_with_members_with_features_old() {
         )
         .file("li/src/main.rs", "fn main() {}")
         .build();
+
+    // HACK: Inject `foo` directly into the index so `publish` won't block for it to be in
+    // the index.
+    //
+    // This is to ensure we can verify the Summary we post to the registry as doing so precludes
+    // the registry from processing the publish.
+    Package::new("li", "0.0.1").file("src/lib.rs", "").publish();
 
     p.cargo("publish -p li --no-verify")
         .replace_crates_io(registry.index_url())

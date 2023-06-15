@@ -1477,7 +1477,7 @@ fn cargo_default_env_metadata_env_var() {
 }
 
 #[cargo_test]
-fn crate_env_vars_without_workspace() {
+fn crate_env_vars() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -1545,9 +1545,6 @@ fn crate_env_vars_without_workspace() {
 
                     // Verify CARGO_TARGET_TMPDIR isn't set for bins
                     assert!(option_env!("CARGO_TARGET_TMPDIR").is_none());
-
-                    // Verify CARGO_WORKSPACE_DIR isn't set for bins
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
                 }
             "#,
         )
@@ -1591,10 +1588,6 @@ fn crate_env_vars_without_workspace() {
                     // Check that CARGO_TARGET_TMPDIR isn't set for unit tests
                     assert!(option_env!("CARGO_TARGET_TMPDIR").is_none());
                     env::var("CARGO_TARGET_TMPDIR").unwrap_err();
-
-                    // Check that CARGO_WORKSPACE_DIR isn't set for unit tests
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
-                    env::var("CARGO_WORKSPACE_DIR").unwrap_err();
                 }
             "#,
         )
@@ -1612,9 +1605,6 @@ fn crate_env_vars_without_workspace() {
 
                     // Verify CARGO_TARGET_TMPDIR isn't set for examples
                     assert!(option_env!("CARGO_TARGET_TMPDIR").is_none());
-
-                    // Verify CARGO_WORKSPACE_DIR isn't set for examples
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
                 }
             "#,
         )
@@ -1624,9 +1614,6 @@ fn crate_env_vars_without_workspace() {
                 #[test]
                 fn env() {
                     foo::check_tmpdir(option_env!("CARGO_TARGET_TMPDIR"));
-
-                    // Verify CARGO_WORKSPACE_DIR isn't set for integration tests without masquerade_as_nightly_cargo()
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
                 }
             "#,
         );
@@ -1642,9 +1629,6 @@ fn crate_env_vars_without_workspace() {
                 #[bench]
                 fn env(_: &mut Bencher) {
                     foo::check_tmpdir(option_env!("CARGO_TARGET_TMPDIR"));
-
-                    // Verify CARGO_WORKSPACE_DIR isn't set for benches without masquerade_as_nightly_cargo()
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
                 }
             "#,
         )
@@ -1674,181 +1658,149 @@ fn crate_env_vars_without_workspace() {
 }
 
 #[cargo_test]
-fn nightly_cargo_workspace_dir_env_var_with_workspace() {
-    Package::new("bar", "0.1.0")
-        .file("src/lib.rs", "#[test] fn bar() {}")
-        .file(
-            "tests/env.rs",
-            r#"
-            use std::path::Path;
-
-            #[test]
-            fn env() {
-                assert!(Path::new(option_env!("CARGO_WORKSPACE_DIR").unwrap()).join(file!()).exists());
-                assert_eq!(std::fs::canonicalize(option_env!("CARGO_WORKSPACE_DIR").unwrap()).unwrap().display().to_string(), option_env!("CARGO_MANIFEST_DIR").unwrap());
-            }
-        "#,
-        )
-        .publish();
-
-    let p = project()
+fn cargo_workspace_dir_foreign_workspace_dep() {
+    let foo = project()
         .file(
             "Cargo.toml",
             r#"
             [workspace]
-            members = ["foo"]
-            "#,
-        )
-        .file(
-            "foo/Cargo.toml",
-            r#"
+
             [package]
             name = "foo"
             version = "0.0.1"
             authors = []
 
             [dependencies]
-            bar = "0.1.0"
-
-            [[bin]]
-            name = "foo-bar"
-            path = "src/main.rs"
+            baz.path = "../baz"
+            baz_member.path = "../baz/baz_member"
             "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+    let _baz = project()
+        .at("baz")
+        .file(
+            "Cargo.toml",
+            r#"
+            [workspace]
+            members = ["baz_member"]
+
+            [package]
+            name = "baz"
+            version = "0.1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "tests/env.rs",
+            r#"
+            use std::path::Path;
+
+            #[test]
+            fn baz_env() {
+                let workspace_dir = Path::new(option_env!("CARGO_WORKSPACE_DIR").expect("CARGO_WORKSPACE_DIR"));
+                let manifest_dir = Path::new(option_env!("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+                let current_dir = std::env::current_dir().expect("current_dir");
+                let file_path = workspace_dir.join(file!());
+                assert!(file_path.exists(), "{}", file_path.display());
+                let workspace_dir = std::fs::canonicalize(current_dir.join(workspace_dir)).expect("CARGO_WORKSPACE_DIR");
+                let manifest_dir = std::fs::canonicalize(current_dir.join(manifest_dir)).expect("CARGO_MANIFEST_DIR");
+                assert_eq!(workspace_dir, manifest_dir);
+            }
+        "#,
         )
         .file(
-            "foo/src/main.rs",
+            "baz_member/Cargo.toml",
             r#"
-                fn main() {
-                    // Verify CARGO_WORKSPACE_DIR isn't set for bins
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
-                }
+            [package]
+            name = "baz_member"
+            version = "0.1.0"
+            authors = []
             "#,
         )
+        .file("baz_member/src/lib.rs", "")
         .file(
-            "foo/src/lib.rs",
+            "baz_member/tests/env.rs",
             r#"
-                use std::env;
+            use std::path::Path;
 
-                #[test]
-                fn env() {
-                    // Check that CARGO_WORKSPACE_DIR isn't set for unit tests
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
-                    env::var("CARGO_WORKSPACE_DIR").unwrap_err();
-                }
-            "#,
+            #[test]
+            fn baz_member_env() {
+                let workspace_dir = Path::new(option_env!("CARGO_WORKSPACE_DIR").expect("CARGO_WORKSPACE_DIR"));
+                let manifest_dir = Path::new(option_env!("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+                let current_dir = std::env::current_dir().expect("current_dir");
+                let file_path = workspace_dir.join(file!());
+                assert!(file_path.exists(), "{}", file_path.display());
+                // TODO: this isn't actually the workspace dir but it is what the user wants
+                let workspace_dir = std::fs::canonicalize(current_dir.join(workspace_dir)).expect("CARGO_WORKSPACE_DIR");
+                let manifest_dir = std::fs::canonicalize(current_dir.join(manifest_dir)).expect("CARGO_MANIFEST_DIR");
+                assert_eq!(workspace_dir, manifest_dir);
+            }
+        "#,
         )
-        .file(
-            "foo/examples/ex-env-vars.rs",
-            r#"
-                fn main() {
-                    // Verify CARGO_WORKSPACE_DIR isn't set for examples
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
-                }
-            "#,
-        )
-        .file(
-            "foo/tests/env.rs",
-            r#"
-                use std::path::Path;
+        .build();
 
-                #[test]
-                fn env() {
-                    assert!(Path::new(option_env!("CARGO_WORKSPACE_DIR").unwrap()).join(file!()).exists());
-                }
-            "#,
-        );
-
-    let p = if is_nightly() {
-        p.file(
-            "foo/benches/env.rs",
-            r#"
-                #![feature(test)]
-                extern crate test;
-                use std::path::Path;
-                use test::Bencher;
-
-                #[bench]
-                fn env(_: &mut Bencher) {
-                    assert!(Path::new(option_env!("CARGO_WORKSPACE_DIR").unwrap()).join(file!()).exists());
-                }
-            "#,
-        )
-            .build()
-    } else {
-        p.build()
-    };
-
-    println!("build");
-    p.cargo("build -v").run();
-
-    println!("bin");
-    p.process(&p.bin("foo-bar")).run();
-
-    println!("example");
-    p.cargo("run --example ex-env-vars -v").run();
-
-    println!("test");
-    p.cargo("test -v").masquerade_as_nightly_cargo(&[]).run();
-
-    if is_nightly() {
-        println!("bench");
-        p.cargo("bench -v").masquerade_as_nightly_cargo(&[]).run();
-    }
-
-    p.cargo("test -p bar")
-        .masquerade_as_nightly_cargo(&[])
-        .with_stdout_contains("running 1 test\ntest bar ... ok")
+    // Verify it works from a different workspace
+    foo.cargo("test -p baz")
+        .masquerade_as_nightly_cargo(&["CARGO_WORKSPACE_DIR"])
+        .with_stdout_contains("running 1 test\ntest baz_env ... ok")
+        .run();
+    foo.cargo("test -p baz_member")
+        .masquerade_as_nightly_cargo(&["CARGO_WORKSPACE_DIR"])
+        .with_stdout_contains("running 1 test\ntest baz_member_env ... ok")
         .run();
 }
 
 #[cargo_test]
-fn nightly_cargo_workspace_dir_env_var_without_workspace() {
+fn cargo_workspace_dir_non_local_dep() {
+    Package::new("bar", "0.1.0")
+        .file(
+            "tests/bar_env.rs",
+            r#"
+            use std::path::Path;
+
+            #[test]
+            fn bar_env() {
+                let workspace_dir = Path::new(option_env!("CARGO_WORKSPACE_DIR").expect("CARGO_WORKSPACE_DIR"));
+                let manifest_dir = Path::new(option_env!("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+                let current_dir = std::env::current_dir().expect("current_dir");
+                let file_path = workspace_dir.join(file!());
+                assert!(file_path.exists(), "{}", file_path.display());
+                let workspace_dir = std::fs::canonicalize(current_dir.join(workspace_dir)).expect("CARGO_WORKSPACE_DIR");
+                let manifest_dir = std::fs::canonicalize(current_dir.join(manifest_dir)).expect("CARGO_MANIFEST_DIR");
+                assert_eq!(workspace_dir, manifest_dir);
+            }
+        "#,
+        )
+        .publish();
+
     let p = project()
+        .file("src/lib.rs", "")
         .file(
             "Cargo.toml",
             r#"
-            [package]
-            name = "foo"
-            version = "0.0.1"
-            authors = []
+                [package]
+                name = "foo"
+                version = "0.0.1"
 
-            [[bin]]
-            name = "foo-bar"
-            path = "src/main.rs"
+                [dependencies]
+                bar = "0.1.0"
             "#,
         )
-        .file(
-            "src/main.rs",
-            r#"
-                extern crate foo;
+        .build();
 
-                fn main() {
-                    // Verify CARGO_WORKSPACE_DIR isn't set for bins
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
-                }
-            "#,
-        )
-        .file(
-            "src/lib.rs",
-            r#"
-                use std::env;
-                #[test]
-                fn env() {
-                    // Check that CARGO_WORKSPACE_DIR isn't set for unit tests
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
-                    env::var("CARGO_WORKSPACE_DIR").unwrap_err();
-                }
-            "#,
-        )
-        .file(
-            "examples/ex-env-vars.rs",
-            r#"
-                fn main() {
-                    // Verify CARGO_WORKSPACE_DIR isn't set for examples
-                    assert!(option_env!("CARGO_WORKSPACE_DIR").is_none());
-                }
-            "#,
-        )
+    p.cargo("test -p bar")
+        .masquerade_as_nightly_cargo(&["CARGO_WORKSPACE_DIR"])
+        .with_stdout_contains("running 1 test\ntest bar_env ... ok")
+        .run();
+}
+
+#[cargo_test]
+fn cargo_workspace_dir_is_not_stable() {
+    if is_nightly() {
+        return;
+    }
+    let p = project()
         .file(
             "tests/env.rs",
             r#"
@@ -1856,47 +1808,13 @@ fn nightly_cargo_workspace_dir_env_var_without_workspace() {
 
                 #[test]
                 fn env() {
-                    assert!(Path::new(option_env!("CARGO_WORKSPACE_DIR").unwrap()).join(file!()).exists());
-                }
-            "#,
-        );
-
-    let p = if is_nightly() {
-        p.file(
-            "benches/env.rs",
-            r#"
-                #![feature(test)]
-                extern crate test;
-                use std::path::Path;
-                use test::Bencher;
-
-                #[bench]
-                fn env(_: &mut Bencher) {
-                    assert!(Path::new(option_env!("CARGO_WORKSPACE_DIR").unwrap()).join(file!()).exists());
+                    assert_eq!(option_env!("CARGO_WORKSPACE_DIR"), None);
                 }
             "#,
         )
-            .build()
-    } else {
-        p.build()
-    };
+        .build();
 
-    println!("build");
-    p.cargo("build -v").run();
-
-    println!("bin");
-    p.process(&p.bin("foo-bar")).run();
-
-    println!("example");
-    p.cargo("run --example ex-env-vars -v").run();
-
-    println!("test");
-    p.cargo("test -v").masquerade_as_nightly_cargo(&[]).run();
-
-    if is_nightly() {
-        println!("bench");
-        p.cargo("bench -v").masquerade_as_nightly_cargo(&[]).run();
-    }
+    p.cargo("test").run();
 }
 
 #[cargo_test]

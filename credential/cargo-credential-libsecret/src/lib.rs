@@ -2,7 +2,6 @@
 mod linux {
     //! Implementation of the libsecret credential helper.
 
-    use anyhow::Context;
     use cargo_credential::{
         read_token, Action, CacheControl, Credential, CredentialResponse, Error, RegistryInfo,
         Secret,
@@ -115,10 +114,7 @@ mod linux {
             let secret_password_store_sync: Symbol<'_, SecretPasswordStoreSync>;
             let secret_password_clear_sync: Symbol<'_, SecretPasswordClearSync>;
             unsafe {
-                lib = Library::new("libsecret-1.so").context(
-                    "failed to load libsecret: try installing the `libsecret` \
-                    or `libsecret-1-0` package with the system package manager",
-                )?;
+                lib = Library::new("libsecret-1.so").map_err(|_err| Error::UrlNotSupported)?;
                 secret_password_lookup_sync = lib
                     .get(b"secret_password_lookup_sync\0")
                     .map_err(Box::new)?;

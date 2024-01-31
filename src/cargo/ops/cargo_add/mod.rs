@@ -584,7 +584,7 @@ fn get_latest_dependency(
         }
         MaybeWorkspace::Other(query) => {
             let possibilities = loop {
-                match registry.query_vec(&query, QueryKind::Fuzzy) {
+                match registry.query_vec(&query, QueryKind::Normalized) {
                     std::task::Poll::Ready(res) => {
                         break res?;
                     }
@@ -707,7 +707,7 @@ fn select_package(
         MaybeWorkspace::Other(query) => {
             let possibilities = loop {
                 // Exact to avoid returning all for path/git
-                match registry.query_vec(&query, QueryKind::Exact) {
+                match registry.query_vec(&query, QueryKind::Normalized) {
                     std::task::Poll::Ready(res) => {
                         break res?;
                     }
@@ -934,7 +934,7 @@ fn populate_available_features(
     }
 
     let possibilities = loop {
-        match registry.query_vec(&query, QueryKind::Exact) {
+        match registry.query_vec(&query, QueryKind::Normalized) {
             std::task::Poll::Ready(res) => {
                 break res?;
             }

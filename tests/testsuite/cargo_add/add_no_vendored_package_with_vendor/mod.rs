@@ -47,7 +47,7 @@ version = "0.0.0"
         .arg_line("cbindgen")
         .current_dir(cwd)
         .assert()
-        .success()
+        .failure()
         .stdout_matches_path(curr_dir!().join("stdout.log"))
         .stderr_matches_path(curr_dir!().join("stderr.log"));
 

@@ -1219,6 +1219,7 @@ version = "0.0.1"
 authors = []
 exclude = ["*.txt"]
 description = "foo"
+readme = false
 license = "MIT"
 
 [package.metadata]
@@ -1293,6 +1294,7 @@ edition = "2015"
 name = "bar"
 version = "0.1.0"
 authors = []
+readme = false
 "#,
         cargo::core::manifest::MANIFEST_PREAMBLE
     );
@@ -1360,6 +1362,7 @@ fn package_public_dep() {
 edition = "2015"
 name = "foo"
 version = "0.0.1"
+readme = false
 
 [dependencies.bar]
 version = "1.0.0"
@@ -1378,6 +1381,7 @@ version = "1.0.0"
 edition = "2015"
 name = "foo"
 version = "0.0.1"
+readme = false
 
 [dependencies.bar]
 version = "1.0.0"
@@ -2806,6 +2810,7 @@ fn workspace_overrides_resolver() {
 edition = "2021"
 name = "bar"
 version = "0.1.0"
+readme = false
 resolver = "1"
 "#,
         cargo::core::manifest::MANIFEST_PREAMBLE
@@ -2825,6 +2830,7 @@ resolver = "1"
 edition = "2015"
 name = "baz"
 version = "0.1.0"
+readme = false
 "#,
         cargo::core::manifest::MANIFEST_PREAMBLE
     );
@@ -2889,6 +2895,7 @@ authors = []
 exclude = ["*.txt"]
 description = "foo"
 homepage = "https://example.com/"
+readme = false
 license = "MIT"
 "#,
         cargo::core::manifest::MANIFEST_PREAMBLE
@@ -2983,6 +2990,7 @@ version = "0.0.1"
 authors = []
 description = "foo"
 documentation = "https://example.com/"
+readme = false
 license = "MIT"
 "#,
         cargo::core::manifest::MANIFEST_PREAMBLE
@@ -3090,6 +3098,7 @@ version = "0.0.1"
 authors = []
 description = "foo"
 homepage = "https://example.com/"
+readme = false
 license = "MIT"
 "#,
         cargo::core::manifest::MANIFEST_PREAMBLE
@@ -3270,6 +3279,7 @@ version = "0.0.1"
 authors = []
 exclude = ["*.txt"]
 description = "foo"
+readme = false
 license = "MIT"
 
 [[test]]
@@ -3770,6 +3780,7 @@ include = [
 ]
 description = "foo"
 documentation = "docs.rs/foo"
+readme = false
 license = "MIT"
 "#,
         )],
@@ -3836,6 +3847,7 @@ authors = []
 include = ["src/lib.rs"]
 description = "foo"
 documentation = "docs.rs/foo"
+readme = false
 license = "MIT"
 "#,
         )],
@@ -3907,6 +3919,7 @@ include = [
 ]
 description = "foo"
 documentation = "docs.rs/foo"
+readme = false
 license = "MIT"
 "#,
         )],
@@ -4021,6 +4034,7 @@ include = [
 ]
 description = "foo"
 documentation = "docs.rs/foo"
+readme = false
 license = "MIT"
 "#,
         )],
@@ -4087,6 +4101,7 @@ authors = []
 include = ["src/main.rs"]
 description = "foo"
 documentation = "docs.rs/foo"
+readme = false
 license = "MIT"
 "#,
         )],
@@ -4165,6 +4180,7 @@ include = [
 ]
 description = "foo"
 documentation = "docs.rs/foo"
+readme = false
 license = "MIT"
 
 [lib]
@@ -4293,6 +4309,7 @@ include = [
 ]
 description = "foo"
 documentation = "docs.rs/foo"
+readme = false
 license = "MIT"
 "#,
         )],
@@ -4362,6 +4379,7 @@ authors = []
 include = ["src/lib.rs"]
 description = "foo"
 documentation = "docs.rs/foo"
+readme = false
 license = "MIT"
 "#,
         )],
@@ -4458,6 +4476,7 @@ include = [
 ]
 description = "foo"
 documentation = "docs.rs/foo"
+readme = false
 license = "MIT"
 
 [[bin]]

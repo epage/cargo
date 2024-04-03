@@ -2165,6 +2165,10 @@ name = "foo"
 version = "0.1.0"
 authors = []
 build = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "foo"
 homepage = "foo"
 documentation = "foo"
@@ -2172,6 +2176,10 @@ readme = false
 license = "MIT"
 repository = "foo"
 resolver = "2"
+
+[lib]
+name = "foo"
+path = "src/lib.rs"
 
 [dependencies.bar]
 version = "1.0"

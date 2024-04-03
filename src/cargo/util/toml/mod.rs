@@ -263,18 +263,18 @@ fn resolve_toml(
     manifest_file: &Path,
     gctx: &GlobalContext,
     warnings: &mut Vec<String>,
-    _errors: &mut Vec<String>,
+    errors: &mut Vec<String>,
 ) -> CargoResult<manifest::TomlManifest> {
     let mut resolved_toml = manifest::TomlManifest {
         cargo_features: original_toml.cargo_features.clone(),
         package: None,
         project: None,
         profile: original_toml.profile.clone(),
-        lib: original_toml.lib.clone(),
-        bin: original_toml.bin.clone(),
-        example: original_toml.example.clone(),
-        test: original_toml.test.clone(),
-        bench: original_toml.bench.clone(),
+        lib: None,
+        bin: None,
+        example: None,
+        test: None,
+        bench: None,
         dependencies: None,
         dev_dependencies: None,
         dev_dependencies2: None,
@@ -301,6 +301,62 @@ fn resolve_toml(
     if let Some(original_package) = original_toml.package() {
         let resolved_package = resolve_package_toml(original_package, package_root, &inherit)?;
         resolved_toml.package = Some(resolved_package);
+        let edition = if let Some(edition) = resolved_toml
+            .package
+            .as_ref()
+            .expect("in `package` branch")
+            .resolved_edition()
+            .expect("previously resolved")
+        {
+            let edition: Edition = edition
+                .parse()
+                .with_context(|| "failed to parse the `edition` key")?;
+            edition
+        } else {
+            let default_edition = Edition::default();
+            default_edition
+        };
+
+        resolved_toml.lib = targets::resolve_lib(
+            original_toml.lib.as_ref(),
+            package_root,
+            &original_package.name,
+            edition,
+            warnings,
+        )?;
+        resolved_toml.bin = Some(targets::resolve_bins(
+            original_toml.bin.as_ref(),
+            package_root,
+            &original_package.name,
+            edition,
+            original_package.autobins,
+            warnings,
+            resolved_toml.lib.is_some(),
+        )?);
+        resolved_toml.example = Some(targets::resolve_examples(
+            original_toml.example.as_ref(),
+            package_root,
+            edition,
+            original_package.autoexamples,
+            warnings,
+            errors,
+        )?);
+        resolved_toml.test = Some(targets::resolve_tests(
+            original_toml.test.as_ref(),
+            package_root,
+            edition,
+            original_package.autotests,
+            warnings,
+            errors,
+        )?);
+        resolved_toml.bench = Some(targets::resolve_benches(
+            original_toml.bench.as_ref(),
+            package_root,
+            edition,
+            original_package.autobenches,
+            warnings,
+            errors,
+        )?);
 
         resolved_toml.dependencies = resolve_dependencies(
             gctx,
@@ -453,10 +509,10 @@ fn resolve_package_toml<'a>(
             .map(manifest::InheritableField::Value),
         workspace: original_package.workspace.clone(),
         im_a_teapot: original_package.im_a_teapot.clone(),
-        autobins: original_package.autobins.clone(),
-        autoexamples: original_package.autoexamples.clone(),
-        autotests: original_package.autotests.clone(),
-        autobenches: original_package.autobenches.clone(),
+        autobins: Some(false),
+        autoexamples: Some(false),
+        autotests: Some(false),
+        autobenches: Some(false),
         default_run: original_package.default_run.clone(),
         description: original_package
             .description
@@ -1070,8 +1126,8 @@ fn to_real_manifest(
     // If we have a lib with no path, use the inferred lib or else the package name.
     let targets = to_targets(
         &features,
+        &original_toml,
         &resolved_toml,
-        package_name,
         package_root,
         edition,
         &resolved_package.metabuild,
@@ -2450,14 +2506,14 @@ fn prepare_toml_for_publish(
     }
 
     let lib = if let Some(target) = &me.lib {
-        Some(prepare_target_for_publish(target, "library")?)
+        prepare_target_for_publish(target, included, "library", ws.gctx())?
     } else {
         None
     };
-    let bin = prepare_targets_for_publish(me.bin.as_ref(), "binary")?;
-    let example = prepare_targets_for_publish(me.example.as_ref(), "example")?;
-    let test = prepare_targets_for_publish(me.test.as_ref(), "test")?;
-    let bench = prepare_targets_for_publish(me.bench.as_ref(), "benchmark")?;
+    let bin = prepare_targets_for_publish(me.bin.as_ref(), included, "binary", ws.gctx())?;
+    let example = prepare_targets_for_publish(me.example.as_ref(), included, "example", ws.gctx())?;
+    let test = prepare_targets_for_publish(me.test.as_ref(), included, "test", ws.gctx())?;
+    let bench = prepare_targets_for_publish(me.bench.as_ref(), included, "benchmark", ws.gctx())?;
 
     let all = |_d: &manifest::TomlDependency| true;
     let mut manifest = manifest::TomlManifest {
@@ -2615,7 +2671,9 @@ fn prepare_toml_for_publish(
 
 fn prepare_targets_for_publish(
     targets: Option<&Vec<manifest::TomlTarget>>,
+    included: &[PathBuf],
     context: &str,
+    gctx: &GlobalContext,
 ) -> CargoResult<Option<Vec<manifest::TomlTarget>>> {
     let Some(targets) = targets else {
         return Ok(None);
@@ -2623,23 +2681,41 @@ fn prepare_targets_for_publish(
 
     let mut prepared = Vec::with_capacity(targets.len());
     for target in targets {
-        let target = prepare_target_for_publish(target, context)?;
+        let Some(target) = prepare_target_for_publish(target, included, context, gctx)? else {
+            continue;
+        };
         prepared.push(target);
     }
 
-    Ok(Some(prepared))
+    if prepared.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(prepared))
+    }
 }
 
 fn prepare_target_for_publish(
     target: &manifest::TomlTarget,
+    included: &[PathBuf],
     context: &str,
-) -> CargoResult<manifest::TomlTarget> {
-    let mut target = target.clone();
-    if let Some(path) = target.path {
-        let path = normalize_path(&path.0);
-        target.path = Some(manifest::PathValue(normalize_path_sep(path, context)?));
+    gctx: &GlobalContext,
+) -> CargoResult<Option<manifest::TomlTarget>> {
+    let path = target.path.as_ref().expect("previously resolved");
+    let path = normalize_path(&path.0);
+    if !included.contains(&path) {
+        let name = target.name.as_ref().expect("previously resolved");
+        gctx.shell().warn(format!(
+            "ignoring {context} `{name}` as `{}` is not included in the published package",
+            path.display()
+        ))?;
+        return Ok(None);
     }
-    Ok(target)
+
+    let mut target = target.clone();
+    let path = normalize_path_sep(path, context)?;
+    target.path = Some(manifest::PathValue(path.into()));
+
+    Ok(Some(target))
 }
 
 fn normalize_path_sep(path: PathBuf, context: &str) -> CargoResult<PathBuf> {

@@ -3175,8 +3175,11 @@ src/main.rs.bak
 #[cfg(windows)] // windows is the platform that is most consistently configured for case insensitive filesystems
 fn normalize_case() {
     let p = project()
-        .file("src/main.rs", r#"fn main() { println!("hello"); }"#)
+        .file("Build.rs", r#"fn main() { println!("hello"); }"#)
+        .file("src/Main.rs", r#"fn main() { println!("hello"); }"#)
+        .file("src/lib.rs", "")
         .file("src/bar.txt", "") // should be ignored when packaging
+        .file("Examples/ExampleFoo.rs", "")
         .build();
     // Workaround `project()` making a `Cargo.toml` on our behalf
     std::fs::remove_file(p.root().join("Cargo.toml")).unwrap();
@@ -3204,7 +3207,7 @@ See [..]
 [VERIFYING] foo v0.0.1 ([CWD])
 [COMPILING] foo v0.0.1 ([CWD][..])
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-[PACKAGED] 4 files, [..] ([..] compressed)
+[PACKAGED] 7 files, [..] ([..] compressed)
 ",
         )
         .run();
@@ -3212,10 +3215,13 @@ See [..]
     p.cargo("package -l")
         .with_stdout(
             "\
+Build.rs
 Cargo.lock
 Cargo.toml
 Cargo.toml.orig
-src/main.rs
+Examples/ExampleFoo.rs
+src/Main.rs
+src/lib.rs
 ",
         )
         .run();
@@ -3228,7 +3234,7 @@ See [..]
 [VERIFYING] foo v0.0.1 ([CWD])
 [COMPILING] foo v0.0.1 ([CWD][..])
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-[PACKAGED] 4 files, [..] ([..] compressed)
+[PACKAGED] 7 files, [..] ([..] compressed)
 ",
         )
         .run();
@@ -3237,8 +3243,31 @@ See [..]
     validate_crate_contents(
         f,
         "foo-0.0.1.crate",
-        &["Cargo.lock", "Cargo.toml", "Cargo.toml.orig", "src/main.rs"],
-        &[],
+        &[
+            "Cargo.lock",
+            "Cargo.toml",
+            "Cargo.toml.orig",
+            "Build.rs",
+            "src/Main.rs",
+            "src/lib.rs",
+            "Examples/ExampleFoo.rs",
+        ],
+        &[(
+            "Cargo.toml",
+            &format!(
+                r#"{}
+[package]
+edition = "2015"
+name = "foo"
+version = "0.0.1"
+authors = []
+exclude = ["*.txt"]
+description = "foo"
+license = "MIT"
+"#,
+                cargo::core::manifest::MANIFEST_PREAMBLE
+            ),
+        )],
     );
 }
 

@@ -2739,21 +2739,20 @@ fn uninstall_running_binary() {
 fn dry_run() {
     pkg("foo", "0.0.1");
 
-    cargo_process("install foo")
+    cargo_process("-Z unstable-options install --dry-run foo")
+        .masquerade_as_nightly_cargo(&["install::dry-run"])
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [DOWNLOADING] crates ...
 [DOWNLOADED] foo v0.0.1 (registry `dummy-registry`)
 [INSTALLING] foo v0.0.1
-[COMPILING] foo v0.0.1
-[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
 [INSTALLING] [ROOT]/home/.cargo/bin/foo[EXE]
-[INSTALLED] package `foo v0.0.1` (executable `foo[EXE]`)
+[WARNING] aborting install due to dry run
 [WARNING] be sure to add `[ROOT]/home/.cargo/bin` to your PATH to be able to run the installed binaries
 
 "#]])
         .run();
-    assert_has_installed_exe(paths::cargo_home(), "foo");
+    assert_has_not_installed_exe(paths::cargo_home(), "foo");
 }
 
 #[cargo_test]
@@ -2770,7 +2769,8 @@ fn dry_run_incompatible_package() {
         )
         .publish();
 
-    cargo_process("install some-package-from-the-distant-future")
+    cargo_process("-Z unstable-options install --dry-run some-package-from-the-distant-future")
+        .masquerade_as_nightly_cargo(&["install::dry-run"])
         .with_status(101)
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
@@ -2788,16 +2788,15 @@ fn dry_run_upgrade() {
     assert_has_installed_exe(paths::cargo_home(), "foo");
 
     pkg("foo", "0.0.2");
-    cargo_process("install foo")
+    cargo_process("-Z unstable-options install --dry-run foo")
+        .masquerade_as_nightly_cargo(&["install::dry-run"])
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [DOWNLOADING] crates ...
 [DOWNLOADED] foo v0.0.2 (registry `dummy-registry`)
 [INSTALLING] foo v0.0.2
-[COMPILING] foo v0.0.2
-[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
 [REPLACING] [ROOT]/home/.cargo/bin/foo[EXE]
-[REPLACED] package `foo v0.0.1` with `foo v0.0.2` (executable `foo[EXE]`)
+[WARNING] aborting install due to dry run
 [WARNING] be sure to add `[ROOT]/home/.cargo/bin` to your PATH to be able to run the installed binaries
 
 "#]])
@@ -2845,21 +2844,21 @@ fn dry_run_remove_orphan() {
         )
         .publish();
 
-    cargo_process("install bar")
+    cargo_process("-Z unstable-options install --dry-run bar")
+        .masquerade_as_nightly_cargo(&["install::dry-run"])
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v2.0.0 (registry `dummy-registry`)
 [INSTALLING] bar v2.0.0
-[COMPILING] bar v2.0.0
-[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
 [REPLACING] [ROOT]/home/.cargo/bin/client[EXE]
 [REMOVING] executable `[ROOT]/home/.cargo/bin/server[EXE]` from previous version bar v1.0.0
-[REPLACED] package `bar v1.0.0` with `bar v2.0.0` (executable `client[EXE]`)
+[WARNING] aborting install due to dry run
 [WARNING] be sure to add `[ROOT]/home/.cargo/bin` to your PATH to be able to run the installed binaries
 
 "#]])
         .run();
     assert_has_installed_exe(paths::cargo_home(), "client");
-    assert_has_not_installed_exe(paths::cargo_home(), "server");
+    // Ensure server is still installed after the dry run
+    assert_has_installed_exe(paths::cargo_home(), "server");
 }

@@ -1904,7 +1904,9 @@ You may press ctrl-c to skip waiting; the crate should be available shortly.
               "target-build-only/cat",
               "target-normal-and-dev/cat",
               "optional-dep-feature/cat",
-              "dep:optional-namespaced"
+              "dep:optional-namespaced",
+              "optional-renamed-dep-feature10/cat",
+              "dep:optional-renamed-namespaced10"
             ]
           },
           "homepage": "foo",

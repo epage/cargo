@@ -3,8 +3,12 @@
 //! [1]: https://doc.rust-lang.org/nightly/cargo/reference/registry-web-api.html#publish
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::time::Duration;
 
 use anyhow::bail;
@@ -15,6 +19,7 @@ use cargo_util::paths;
 use crates_io::NewCrate;
 use crates_io::NewCrateDependency;
 use crates_io::Registry;
+use itertools::Itertools;
 
 use crate::core::dependency::DepKind;
 use crate::core::manifest::ManifestMetadata;
@@ -28,6 +33,7 @@ use crate::core::Workspace;
 use crate::ops;
 use crate::ops::PackageOpts;
 use crate::ops::Packages;
+use crate::ops::RegistryOrIndex;
 use crate::sources::source::QueryKind;
 use crate::sources::source::Source;
 use crate::sources::SourceConfigMap;
@@ -36,13 +42,13 @@ use crate::util::auth;
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::context::JobsConfig;
 use crate::util::toml::prepare_for_publish;
+use crate::util::Graph;
 use crate::util::Progress;
 use crate::util::ProgressStyle;
 use crate::CargoResult;
 use crate::GlobalContext;
 
 use super::super::check_dep_has_version;
-use super::RegistryOrIndex;
 
 pub struct PublishOpts<'gctx> {
     pub gctx: &'gctx GlobalContext,
@@ -59,16 +65,23 @@ pub struct PublishOpts<'gctx> {
 }
 
 pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
+    let multi_package_mode = ws.gctx().cli_unstable().package_workspace;
     let specs = opts.to_publish.to_package_id_specs(ws)?;
-    if specs.len() > 1 {
-        bail!("the `-p` argument must be specified to select a single package to publish")
+
+    if !multi_package_mode {
+        if specs.len() > 1 {
+            bail!("the `-p` argument must be specified to select a single package to publish")
+        }
+        if Packages::Default == opts.to_publish && ws.is_virtual() {
+            bail!("the `-p` argument must be specified in the root of a virtual workspace")
+        }
     }
-    if Packages::Default == opts.to_publish && ws.is_virtual() {
-        bail!("the `-p` argument must be specified in the root of a virtual workspace")
+
+    let member_ids: Vec<_> = ws.members().map(|p| p.package_id()).collect();
+    // Check that the specs match members.
+    for spec in &specs {
+        spec.query(member_ids.clone())?;
     }
-    let member_ids = ws.members().map(|p| p.package_id());
-    // Check that the spec matches exactly one member.
-    specs[0].query(member_ids)?;
     let mut pkgs = ws.members_with_features(&specs, &opts.cli_features)?;
     // In `members_with_features_old`, it will add "current" package (determined by the cwd)
     // So we need filter
@@ -76,8 +89,6 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
         .into_iter()
         .filter(|(m, _)| specs.iter().any(|spec| spec.matches(m.package_id())))
         .collect();
-    // Double check. It is safe theoretically, unless logic has updated.
-    assert_eq!(pkgs.len(), 1);
 
     let just_pkgs: Vec<_> = pkgs.iter().map(|p| p.0).collect();
     let reg_or_index = match opts.reg_or_index.clone() {
@@ -103,9 +114,6 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
 
     // This is only used to confirm that we can create a token before we build the package.
     // This causes the credential provider to be called an extra time, but keeps the same order of errors.
-    let (pkg, cli_features) = pkgs.pop().unwrap();
-    let ver = pkg.version().to_string();
-
     let source_ids = super::get_source_id(opts.gctx, reg_or_index.as_ref())?;
     let mut registry = super::registry(
         opts.gctx,
@@ -115,82 +123,161 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
         true,
         Some(Operation::Read).filter(|_| !opts.dry_run),
     )?;
-    verify_dependencies(pkg, &registry, source_ids.original)?;
 
-    // Prepare a tarball, with a non-suppressible warning if metadata
-    // is missing since this is being put online.
-    let tarball = ops::package_one(
+    // Validate all the packages before publishing any of them.
+    for (pkg, _) in &pkgs {
+        verify_dependencies(pkg, &registry, source_ids.original)?;
+    }
+
+    let pkg_dep_graph = ops::cargo_package::package_with_dep_graph(
         ws,
-        pkg,
         &PackageOpts {
             gctx: opts.gctx,
             verify: opts.verify,
             list: false,
             check_metadata: true,
             allow_dirty: opts.allow_dirty,
-            to_package: Packages::Default,
+            // `package_with_dep_graph` ignores this field in favor of
+            // the already-resolved list of packages
+            to_package: ops::Packages::Default,
             targets: opts.targets.clone(),
             jobs: opts.jobs.clone(),
             keep_going: opts.keep_going,
-            cli_features,
-            reg_or_index,
+            cli_features: opts.cli_features.clone(),
+            reg_or_index: reg_or_index.clone(),
         },
+        pkgs,
     )?;
 
-    if !opts.dry_run {
-        let hash = cargo_util::Sha256::new()
-            .update_file(tarball.file())?
-            .finish_hex();
-        let operation = Operation::Publish {
-            name: pkg.name().as_str(),
-            vers: &ver,
-            cksum: &hash,
-        };
-        registry.set_token(Some(auth::auth_token(
-            &opts.gctx,
-            &source_ids.original,
-            None,
-            operation,
-            vec![],
-            false,
-        )?));
-    }
+    // Upload packages in rounds, being sure not to upload a package until all its
+    // dependencies are available in the registry. We alternate between:
+    //
+    // 1. Upload all packages whose dependencies are available.
+    // 2. Poll the registry until some package we care about becomes
+    //    available (the set we poll for is `to_confirm`).
+    //
+    // Note that `to_confirm` might contains packages from previous rounds: we
+    // might upload a bunch of packages in step 1, observe in step 2 that one
+    // has become available, and then go back to step 1 and upload a bunch more.
+    // Then `to_confirm` will contain the new packages we just uploaded, plus
+    // most of the packages from the previous round.
+    let mut order = PublishOrder::new(&pkg_dep_graph.graph);
+    let mut to_confirm = BTreeSet::new();
 
-    opts.gctx
-        .shell()
-        .status("Uploading", pkg.package_id().to_string())?;
-    transmit(
-        opts.gctx,
-        ws,
-        pkg,
-        tarball.file(),
-        &mut registry,
-        source_ids.original,
-        opts.dry_run,
-    )?;
-    if !opts.dry_run {
-        const DEFAULT_TIMEOUT: u64 = 60;
-        let timeout = if opts.gctx.cli_unstable().publish_timeout {
-            let timeout: Option<u64> = opts.gctx.get("publish.timeout")?;
-            timeout.unwrap_or(DEFAULT_TIMEOUT)
-        } else {
-            DEFAULT_TIMEOUT
-        };
-        if 0 < timeout {
-            let timeout = Duration::from_secs(timeout);
-            wait_for_publish(opts.gctx, source_ids.original, pkg, timeout)?;
+    while !order.remaining().is_empty() {
+        // There might not be any ready package, if the previous confirmations
+        // didn't unlock a new one. For example, if `c` depends on `a` and
+        // `b`, and we uploaded `a` and `b` but only confirmed `a`, then on
+        // the following pass through the outer loop nothing will be ready for
+        // upload.
+        for pkg_id in order.take_ready() {
+            let (pkg, (_features, tarball)) = &pkg_dep_graph.packages[&pkg_id];
+            opts.gctx.shell().status("Uploading", pkg.package_id())?;
+
+            if !opts.dry_run {
+                let ver = pkg.version().to_string();
+
+                tarball.file().seek(SeekFrom::Start(0))?;
+                let hash = cargo_util::Sha256::new()
+                    .update_file(tarball.file())?
+                    .finish_hex();
+                let operation = Operation::Publish {
+                    name: pkg.name().as_str(),
+                    vers: &ver,
+                    cksum: &hash,
+                };
+                registry.set_token(Some(auth::auth_token(
+                    &opts.gctx,
+                    &source_ids.original,
+                    None,
+                    operation,
+                    vec![],
+                    false,
+                )?));
+            }
+
+            transmit(
+                opts.gctx,
+                ws,
+                pkg,
+                tarball.file(),
+                &mut registry,
+                source_ids.original,
+                opts.dry_run,
+            )?;
+            to_confirm.insert(pkg_id);
+
+            if !opts.dry_run {
+                // Short does not include the registry name.
+                let short_pkg_description = format!("{} v{}", pkg.name(), pkg.version());
+                let source_description = source_ids.original.to_string();
+                ws.gctx().shell().status(
+                    "Uploaded",
+                    format!("{short_pkg_description} to {source_description}"),
+                )?;
+            }
         }
+
+        let confirmed = if opts.dry_run {
+            to_confirm.clone()
+        } else {
+            const DEFAULT_TIMEOUT: u64 = 60;
+            let timeout = if opts.gctx.cli_unstable().publish_timeout {
+                let timeout: Option<u64> = opts.gctx.get("publish.timeout")?;
+                timeout.unwrap_or(DEFAULT_TIMEOUT)
+            } else {
+                DEFAULT_TIMEOUT
+            };
+            if 0 < timeout {
+                // Note that we're applying the timeout on every pass through
+                // the loop, so that if there's a big dependency graph then the
+                // "effective" timeout could be much larger. Maybe this is not
+                // the right behavior.
+                let timeout = Duration::from_secs(timeout);
+                wait_for_any_publish_confirmation(
+                    opts.gctx,
+                    source_ids.original,
+                    &to_confirm,
+                    timeout,
+                )?
+            } else {
+                BTreeSet::new()
+            }
+        };
+
+        for id in &confirmed {
+            to_confirm.remove(id);
+        }
+        if confirmed.is_empty() {
+            // If nothing finished, it means we timed out while waiting for confirmation.
+            // We're going to exit, but first we need to check: have we uploaded everything?
+            let remaining = order.remaining();
+            if remaining.is_empty() {
+                // It's ok that we timed out, because nothing was waiting on dependencies to
+                // be confirmed.
+                break;
+            } else {
+                let failed_list = package_list(remaining.iter().copied(), "and");
+                bail!("unable to publish {failed_list} due to time out while waiting for published dependencies to be available.");
+            }
+        }
+
+        order.mark_published(confirmed);
     }
 
     Ok(())
 }
 
-fn wait_for_publish(
+// Polls the registry for a set of packages, and returns as soon as any of them
+// is confirmed. The return value is the set of confirmed packages.
+//
+// Returns an empty set if and only if we timed out before confirming anything.
+fn wait_for_any_publish_confirmation(
     gctx: &GlobalContext,
     registry_src: SourceId,
-    pkg: &Package,
+    pkgs: &BTreeSet<PackageId>,
     timeout: Duration,
-) -> CargoResult<()> {
+) -> CargoResult<BTreeSet<PackageId>> {
     let mut source = SourceConfigMap::empty(gctx)?.load(registry_src, &HashSet::new())?;
     // Disable the source's built-in progress bars. Repeatedly showing a bunch
     // of independent progress bars can be a little confusing. There is an
@@ -202,18 +289,14 @@ fn wait_for_publish(
     let sleep_time = Duration::from_secs(1);
     let max = timeout.as_secs() as usize;
     // Short does not include the registry name.
-    let short_pkg_description = format!("{} v{}", pkg.name(), pkg.version());
-    gctx.shell().status(
-        "Uploaded",
-        format!("{short_pkg_description} to {source_description}"),
-    )?;
+    let short_pkg_descriptions = package_list(pkgs.iter().copied(), "or");
     gctx.shell().note(format!(
-        "waiting for `{short_pkg_description}` to be available at {source_description}.\n\
+        "waiting for {short_pkg_descriptions} to be available at {source_description}.\n\
         You may press ctrl-c to skip waiting; the crate should be available shortly."
     ))?;
     let mut progress = Progress::with_style("Waiting", ProgressStyle::Ratio, gctx);
     progress.tick_now(0, max, "")?;
-    let is_available = loop {
+    let available = loop {
         {
             let _lock = gctx.acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
             // Force re-fetching the source
@@ -223,34 +306,48 @@ fn wait_for_publish(
             // multiple times
             gctx.updated_sources().remove(&source.replaced_source_id());
             source.invalidate_cache();
-            if poll_one_package(registry_src, &pkg.package_id(), &mut source)? {
-                break true;
+            let mut available = BTreeSet::new();
+            for pkg in pkgs {
+                if poll_one_package(registry_src, pkg, &mut source)? {
+                    available.insert(*pkg);
+                }
+            }
+
+            // As soon as any package is available, break this loop so we can see if another
+            // one can be uploaded.
+            if !available.is_empty() {
+                break available;
             }
         }
 
         let elapsed = now.elapsed();
         if timeout < elapsed {
             gctx.shell().warn(format!(
-                "timed out waiting for `{short_pkg_description}` to be available in {source_description}",
+                "timed out waiting for {short_pkg_descriptions} to be available in {source_description}",
             ))?;
             gctx.shell().note(
                 "the registry may have a backlog that is delaying making the \
                 crate available. The crate should be available soon.",
             )?;
-            break false;
+            break BTreeSet::new();
         }
 
         progress.tick_now(elapsed.as_secs() as usize, max, "")?;
         std::thread::sleep(sleep_time);
     };
-    if is_available {
+    if !available.is_empty() {
+        let short_pkg_description = available
+            .iter()
+            .map(|pkg| format!("{} v{}", pkg.name(), pkg.version()))
+            .sorted()
+            .join(", ");
         gctx.shell().status(
             "Published",
             format!("{short_pkg_description} at {source_description}"),
         )?;
     }
 
-    Ok(())
+    Ok(available)
 }
 
 fn poll_one_package(
@@ -485,6 +582,91 @@ fn transmit(
     Ok(())
 }
 
+// State for tracking dependencies during upload.
+struct PublishOrder {
+    // The reverse-dependency graph. It has an edge p -> q if package q depends on package p.
+    rev_graph: Graph<PackageId, ()>,
+    // The weight of a package is the number of unpublished dependencies it has.
+    weights: HashMap<PackageId, usize>,
+    // The set of packages whose dependencies are met but have not yet been uploaded.
+    ready: BTreeSet<PackageId>,
+    // The set of packages that have not yet been uploaded. This is always equal
+    // to `ready`, plus the set of packages with positive weights.
+    remaining: BTreeSet<PackageId>,
+}
+
+impl PublishOrder {
+    // Given a package dependency graph, creates a `PublishOrder` for tracking state.
+    fn new(graph: &Graph<PackageId, ()>) -> Self {
+        let rev_graph = graph.reversed();
+
+        let weights: HashMap<_, _> = rev_graph
+            .iter()
+            .map(|id| (*id, graph.edges(id).count()))
+            .collect();
+        let ready = weights
+            .iter()
+            .filter_map(|(id, weight)| (*weight == 0).then_some(*id))
+            .collect();
+        let remaining = weights.keys().copied().collect();
+        Self {
+            rev_graph,
+            weights,
+            ready,
+            remaining,
+        }
+    }
+
+    // Returns the set of packages that are ready for publishing (i.e. have no outstanding dependencies).
+    //
+    // The returned packages will be marked as "done" in our internal state, and
+    // will not be returned on future calls to take_ready.
+    fn take_ready(&mut self) -> BTreeSet<PackageId> {
+        for pkg in &self.ready {
+            self.remaining.remove(pkg);
+        }
+        std::mem::take(&mut self.ready)
+    }
+
+    // The set of packages that have outstanding dependencies.
+    fn remaining(&self) -> &BTreeSet<PackageId> {
+        &self.remaining
+    }
+
+    // Marks a list of packages as having been published.
+    fn mark_published(&mut self, published: impl IntoIterator<Item = PackageId>) {
+        for id in published {
+            for (dependent_id, _) in self.rev_graph.edges(&id) {
+                if let Some(weight) = self.weights.get_mut(dependent_id) {
+                    *weight = weight.saturating_sub(1);
+                    if *weight == 0 {
+                        self.ready.insert(*dependent_id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Format a collection of packages as a list, like "foo v0.1.0, bar v0.2.0, and baz v0.3.0".
+// The final separator (i.e. "and" in the previous example) can be chosen.
+fn package_list(pkgs: impl IntoIterator<Item = PackageId>, final_sep: &str) -> String {
+    let mut names: Vec<_> = pkgs
+        .into_iter()
+        .map(|pkg| format!("`{} v{}`", pkg.name(), pkg.version()))
+        .collect();
+    names.sort();
+
+    match &names[..] {
+        [] => String::new(),
+        [a] => a.clone(),
+        [a, b] => format!("{a} {final_sep} {b}"),
+        [names @ .., last] => {
+            format!("{}, {final_sep} {last}", names.join(", "))
+        }
+    }
+}
+
 fn validate_registry(pkgs: &[&Package], reg_or_index: Option<&RegistryOrIndex>) -> CargoResult<()> {
     for pkg in pkgs {
         if pkg.publish() == &Some(Vec::new()) {
@@ -517,4 +699,60 @@ fn validate_registry(pkgs: &[&Package], reg_or_index: Option<&RegistryOrIndex>) 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        core::{PackageId, SourceId},
+        sources::CRATES_IO_INDEX,
+        util::{Graph, IntoUrl},
+    };
+
+    use super::PublishOrder;
+
+    fn pkg_id(name: &str) -> PackageId {
+        let loc = CRATES_IO_INDEX.into_url().unwrap();
+        PackageId::try_new(name, "1.0.0", SourceId::for_registry(&loc).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn parallel_schedule() {
+        let mut graph: Graph<PackageId, ()> = Graph::new();
+        let a = pkg_id("a");
+        let b = pkg_id("b");
+        let c = pkg_id("c");
+        let d = pkg_id("d");
+        let e = pkg_id("e");
+
+        graph.add(a);
+        graph.add(b);
+        graph.add(c);
+        graph.add(d);
+        graph.add(e);
+        graph.link(a, c);
+        graph.link(b, c);
+        graph.link(c, d);
+        graph.link(c, e);
+
+        let mut order = PublishOrder::new(&graph);
+        let ready: Vec<_> = order.take_ready().into_iter().collect();
+        assert_eq!(ready, vec![d, e]);
+
+        order.mark_published(vec![d]);
+        let ready: Vec<_> = order.take_ready().into_iter().collect();
+        assert!(ready.is_empty());
+
+        order.mark_published(vec![e]);
+        let ready: Vec<_> = order.take_ready().into_iter().collect();
+        assert_eq!(ready, vec![c]);
+
+        order.mark_published(vec![c]);
+        let ready: Vec<_> = order.take_ready().into_iter().collect();
+        assert_eq!(ready, vec![a, b]);
+
+        order.mark_published(vec![a, b]);
+        let ready: Vec<_> = order.take_ready().into_iter().collect();
+        assert!(ready.is_empty());
+    }
 }

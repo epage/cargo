@@ -149,28 +149,21 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
         pkgs,
     )?;
 
-    // Upload packages in rounds, being sure not to upload a package until all its
-    // dependencies are available in the registry. We alternate between:
+    let mut plan = PublishPlan::new(&pkg_dep_graph.graph);
+    // May contains packages from previous rounds as `wait_for_any_publish_confirmation` returns
+    // after it confirms any packages, not all packages, requiring us to handle the rest in the next
+    // iteration.
     //
-    // 1. Upload all packages whose dependencies are available.
-    // 2. Poll the registry until some package we care about becomes
-    //    available (the set we poll for is `to_confirm`).
-    //
-    // Note that `to_confirm` might contains packages from previous rounds: we
-    // might upload a bunch of packages in step 1, observe in step 2 that one
-    // has become available, and then go back to step 1 and upload a bunch more.
-    // Then `to_confirm` will contain the new packages we just uploaded, plus
-    // most of the packages from the previous round.
-    let mut order = PublishOrder::new(&pkg_dep_graph.graph);
+    // As a side effect, any given package's "effective" timeout may be much larger.
     let mut to_confirm = BTreeSet::new();
 
-    while !order.remaining().is_empty() {
+    while !plan.is_empty() {
         // There might not be any ready package, if the previous confirmations
         // didn't unlock a new one. For example, if `c` depends on `a` and
         // `b`, and we uploaded `a` and `b` but only confirmed `a`, then on
         // the following pass through the outer loop nothing will be ready for
         // upload.
-        for pkg_id in order.take_ready() {
+        for pkg_id in plan.take_ready() {
             let (pkg, (_features, tarball)) = &pkg_dep_graph.packages[&pkg_id];
             opts.gctx.shell().status("Uploading", pkg.package_id())?;
 
@@ -229,10 +222,6 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
                 DEFAULT_TIMEOUT
             };
             if 0 < timeout {
-                // Note that we're applying the timeout on every pass through
-                // the loop, so that if there's a big dependency graph then the
-                // "effective" timeout could be much larger. Maybe this is not
-                // the right behavior.
                 let timeout = Duration::from_secs(timeout);
                 wait_for_any_publish_confirmation(
                     opts.gctx,
@@ -244,34 +233,31 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
                 BTreeSet::new()
             }
         };
-
-        for id in &confirmed {
-            to_confirm.remove(id);
-        }
         if confirmed.is_empty() {
             // If nothing finished, it means we timed out while waiting for confirmation.
             // We're going to exit, but first we need to check: have we uploaded everything?
-            let remaining = order.remaining();
-            if remaining.is_empty() {
+            if plan.is_empty() {
                 // It's ok that we timed out, because nothing was waiting on dependencies to
                 // be confirmed.
                 break;
             } else {
-                let failed_list = package_list(remaining.iter().copied(), "and");
+                let failed_list = package_list(plan.iter(), "and");
                 bail!("unable to publish {failed_list} due to time out while waiting for published dependencies to be available.");
             }
         }
-
-        order.mark_published(confirmed);
+        for id in &confirmed {
+            to_confirm.remove(id);
+        }
+        plan.mark_confirmed(confirmed);
     }
 
     Ok(())
 }
 
-// Polls the registry for a set of packages, and returns as soon as any of them
-// is confirmed. The return value is the set of confirmed packages.
-//
-// Returns an empty set if and only if we timed out before confirming anything.
+/// Poll the registry for any packages that are ready for use.
+///
+/// Returns the subset of `pkgs` that are ready for use.
+/// This will be an empty set if we timed out before confirming anything.
 fn wait_for_any_publish_confirmation(
     gctx: &GlobalContext,
     registry_src: SourceId,
@@ -582,74 +568,70 @@ fn transmit(
     Ok(())
 }
 
-// State for tracking dependencies during upload.
-struct PublishOrder {
-    // The reverse-dependency graph. It has an edge p -> q if package q depends on package p.
-    rev_graph: Graph<PackageId, ()>,
-    // The weight of a package is the number of unpublished dependencies it has.
-    weights: HashMap<PackageId, usize>,
-    // The set of packages whose dependencies are met but have not yet been uploaded.
-    ready: BTreeSet<PackageId>,
-    // The set of packages that have not yet been uploaded. This is always equal
-    // to `ready`, plus the set of packages with positive weights.
-    remaining: BTreeSet<PackageId>,
+/// State for tracking dependencies during upload.
+struct PublishPlan {
+    /// Graph of publishable packages where the edges are `(dependency -> dependent)`
+    dependents: Graph<PackageId, ()>,
+    /// The weight of a package is the number of unpublished dependencies it has.
+    dependencies_count: HashMap<PackageId, usize>,
 }
 
-impl PublishOrder {
-    // Given a package dependency graph, creates a `PublishOrder` for tracking state.
+impl PublishPlan {
+    /// Given a package dependency graph, creates a `PublishPlan` for tracking state.
     fn new(graph: &Graph<PackageId, ()>) -> Self {
-        let rev_graph = graph.reversed();
+        let dependents = graph.reversed();
 
-        let weights: HashMap<_, _> = rev_graph
+        let dependencies_count: HashMap<_, _> = dependents
             .iter()
             .map(|id| (*id, graph.edges(id).count()))
             .collect();
-        let ready = weights
+        Self {
+            dependents,
+            dependencies_count,
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = PackageId> + '_ {
+        self.dependencies_count.iter().map(|(id, _)| *id)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.dependencies_count.is_empty()
+    }
+
+    /// Returns the set of packages that are ready for publishing (i.e. have no outstanding dependencies).
+    ///
+    /// These will not be returned in future calls.
+    fn take_ready(&mut self) -> BTreeSet<PackageId> {
+        let ready: BTreeSet<_> = self
+            .dependencies_count
             .iter()
             .filter_map(|(id, weight)| (*weight == 0).then_some(*id))
             .collect();
-        let remaining = weights.keys().copied().collect();
-        Self {
-            rev_graph,
-            weights,
-            ready,
-            remaining,
+        for pkg in &ready {
+            self.dependencies_count.remove(pkg);
         }
+        ready
     }
 
-    // Returns the set of packages that are ready for publishing (i.e. have no outstanding dependencies).
-    //
-    // The returned packages will be marked as "done" in our internal state, and
-    // will not be returned on future calls to take_ready.
-    fn take_ready(&mut self) -> BTreeSet<PackageId> {
-        for pkg in &self.ready {
-            self.remaining.remove(pkg);
-        }
-        std::mem::take(&mut self.ready)
-    }
-
-    // The set of packages that have outstanding dependencies.
-    fn remaining(&self) -> &BTreeSet<PackageId> {
-        &self.remaining
-    }
-
-    // Marks a list of packages as having been published.
-    fn mark_published(&mut self, published: impl IntoIterator<Item = PackageId>) {
+    /// Packages confirmed to be available in the registry, potentially allowing additional
+    /// packages to be "ready".
+    fn mark_confirmed(&mut self, published: impl IntoIterator<Item = PackageId>) {
         for id in published {
-            for (dependent_id, _) in self.rev_graph.edges(&id) {
-                if let Some(weight) = self.weights.get_mut(dependent_id) {
+            for (dependent_id, _) in self.dependents.edges(&id) {
+                if let Some(weight) = self.dependencies_count.get_mut(dependent_id) {
                     *weight = weight.saturating_sub(1);
-                    if *weight == 0 {
-                        self.ready.insert(*dependent_id);
-                    }
                 }
             }
         }
     }
 }
 
-// Format a collection of packages as a list, like "foo v0.1.0, bar v0.2.0, and baz v0.3.0".
-// The final separator (i.e. "and" in the previous example) can be chosen.
+/// Format a collection of packages as a list
+///
+/// e.g. "foo v0.1.0, bar v0.2.0, and baz v0.3.0".
+///
+/// Note: the final separator (e.g. "and" in the previous example) can be chosen.
 fn package_list(pkgs: impl IntoIterator<Item = PackageId>, final_sep: &str) -> String {
     let mut names: Vec<_> = pkgs
         .into_iter()
@@ -709,7 +691,7 @@ mod tests {
         util::{Graph, IntoUrl},
     };
 
-    use super::PublishOrder;
+    use super::PublishPlan;
 
     fn pkg_id(name: &str) -> PackageId {
         let loc = CRATES_IO_INDEX.into_url().unwrap();
@@ -735,23 +717,23 @@ mod tests {
         graph.link(c, d);
         graph.link(c, e);
 
-        let mut order = PublishOrder::new(&graph);
+        let mut order = PublishPlan::new(&graph);
         let ready: Vec<_> = order.take_ready().into_iter().collect();
         assert_eq!(ready, vec![d, e]);
 
-        order.mark_published(vec![d]);
+        order.mark_confirmed(vec![d]);
         let ready: Vec<_> = order.take_ready().into_iter().collect();
         assert!(ready.is_empty());
 
-        order.mark_published(vec![e]);
+        order.mark_confirmed(vec![e]);
         let ready: Vec<_> = order.take_ready().into_iter().collect();
         assert_eq!(ready, vec![c]);
 
-        order.mark_published(vec![c]);
+        order.mark_confirmed(vec![c]);
         let ready: Vec<_> = order.take_ready().into_iter().collect();
         assert_eq!(ready, vec![a, b]);
 
-        order.mark_published(vec![a, b]);
+        order.mark_confirmed(vec![a, b]);
         let ready: Vec<_> = order.take_ready().into_iter().collect();
         assert!(ready.is_empty());
     }

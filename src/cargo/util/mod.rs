@@ -74,6 +74,18 @@ pub mod toml_mut;
 mod vcs;
 mod workspace;
 
+pub type HashRandomState = foldhash::fast::RandomState;
+pub type IndexMap<K, V, R = HashRandomState> = indexmap::IndexMap<K, V, R>;
+pub type IndexSet<T, R = HashRandomState> = indexmap::IndexSet<T, R>;
+
+pub fn new_index_map<K, V>() -> IndexMap<K, V> {
+    IndexMap::with_hasher(HashRandomState::default())
+}
+
+pub fn new_index_set<T>() -> IndexSet<T> {
+    IndexSet::with_hasher(HashRandomState::default())
+}
+
 pub fn is_rustup() -> bool {
     // ALLOWED: `RUSTUP_HOME` should only be read from process env, otherwise
     // other tools may point to executables from incompatible distributions.

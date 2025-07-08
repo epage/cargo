@@ -5,7 +5,6 @@ use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 
 use cargo_util_schemas::manifest::PathBaseName;
-use indexmap::IndexSet;
 use itertools::Itertools;
 use toml_edit::KeyMut;
 
@@ -15,6 +14,7 @@ use crate::GlobalContext;
 use crate::core::SourceId;
 use crate::core::Summary;
 use crate::core::{Features, GitReference};
+use crate::util::IndexSet;
 use crate::util::toml::lookup_path_base;
 
 /// A dependency handled by Cargo.

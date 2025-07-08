@@ -13,7 +13,7 @@ use crate::util::style;
 use crate::util::{CargoResult, GlobalContext};
 use anyhow::Context as _;
 use cargo_util::paths;
-use indexmap::IndexMap;
+use crate::util::IndexMap;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::io::{BufWriter, Write};

@@ -319,6 +319,7 @@ dependencies = [
  "curl-sys",
  "filetime",
  "flate2",
+ "foldhash 0.1.5",
  "git2",
  "git2-curl",
  "gix",
@@ -4471,7 +4472,7 @@ version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0dc8b1fb61449e27716ec0e1bdf0f6b8f3e8f6b05391e8497b8b6d7804ea6d8"
 dependencies = [
- "foldhash",
+ "foldhash 0.2.0",
  "indexmap",
  "serde_core",
  "serde_spanned",

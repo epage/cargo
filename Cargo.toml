@@ -46,6 +46,7 @@ curl = "0.4.49"
 curl-sys = "0.4.83"
 filetime = "0.2.26"
 flate2 = { version = "1.1.5", default-features = false, features = ["zlib-rs"] }
+foldhash = "0.1"
 git2 = "0.20.2"
 git2-curl = "0.21.0"
 # When updating this, also see if `gix-transport` further down needs updating or some auth-related tests will fail.
@@ -171,6 +172,7 @@ curl = { workspace = true, features = ["http2"] }
 curl-sys.workspace = true
 filetime.workspace = true
 flate2.workspace = true
+foldhash.workspace = true
 git2.workspace = true
 git2-curl.workspace = true
 gix.workspace = true

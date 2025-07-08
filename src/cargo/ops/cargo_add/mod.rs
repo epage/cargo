@@ -14,7 +14,6 @@ use cargo_util::paths;
 use cargo_util_schemas::core::PartialVersion;
 use cargo_util_schemas::manifest::PathBaseName;
 use cargo_util_schemas::manifest::RustVersion;
-use indexmap::IndexSet;
 use itertools::Itertools;
 use toml_edit::Item as TomlItem;
 
@@ -34,6 +33,7 @@ use crate::core::registry::PackageRegistry;
 use crate::ops::resolve_ws;
 use crate::sources::source::QueryKind;
 use crate::util::OptVersionReq;
+use crate::util::IndexSet;
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::edit_distance;
 use crate::util::style;

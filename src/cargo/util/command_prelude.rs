@@ -25,7 +25,6 @@ use cargo_util_schemas::manifest::StringOrVec;
 use clap::builder::UnknownArgumentValueParser;
 use clap_complete::ArgValueCandidates;
 use home::cargo_home_with_cwd;
-use indexmap::IndexSet;
 use itertools::Itertools;
 use semver::Version;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -34,6 +33,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub use crate::core::compiler::UserIntent;
+use crate::util::new_index_set;
 pub use crate::{CliError, CliResult, GlobalContext};
 pub use clap::{Arg, ArgAction, ArgMatches, value_parser};
 
@@ -1501,7 +1501,7 @@ pub fn get_direct_dependencies_pkg_name_candidates() -> Vec<clap_complete::Compl
         .map(|dep| dep.package_name().to_string())
         .sorted();
 
-    let mut package_names_set = IndexSet::new();
+    let mut package_names_set = new_index_set();
     package_names_set.extend(current_package_deps_package_names);
     package_names_set.extend(all_package_deps_package_names);
 

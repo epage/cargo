@@ -8,8 +8,10 @@ use crate::core::{Resolve, SourceId, Workspace};
 use crate::ops;
 use crate::sources::IndexSummary;
 use crate::sources::source::QueryKind;
+use crate::util::IndexMap;
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::context::GlobalContext;
+use crate::util::new_index_map;
 use crate::util::toml_mut::dependency::{MaybeWorkspace, Source};
 use crate::util::toml_mut::manifest::LocalManifest;
 use crate::util::toml_mut::upgrade::upgrade_requirement;
@@ -17,7 +19,6 @@ use crate::util::{CargoResult, VersionExt};
 use crate::util::{OptVersionReq, style};
 use anyhow::Context as _;
 use cargo_util_schemas::core::PartialVersion;
-use indexmap::IndexMap;
 use itertools::Itertools;
 use semver::{Op, Version, VersionReq};
 use std::cmp::Ordering;
@@ -910,7 +911,7 @@ impl PackageChange {
     ) -> IndexMap<PackageId, Self> {
         let member_ids: HashSet<_> = ws.members().map(|p| p.package_id()).collect();
 
-        let mut changes = IndexMap::new();
+        let mut changes = new_index_map();
         for diff in diff {
             if let Some((previous_id, package_id)) = diff.change() {
                 // If versions differ only in build metadata, we call it an "update"

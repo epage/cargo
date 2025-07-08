@@ -343,6 +343,7 @@ dependencies = [
  "curl-sys",
  "filetime",
  "flate2",
+ "foldhash",
  "git2",
  "git2-curl",
  "gix",

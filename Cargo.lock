@@ -4471,6 +4471,7 @@ version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0dc8b1fb61449e27716ec0e1bdf0f6b8f3e8f6b05391e8497b8b6d7804ea6d8"
 dependencies = [
+ "foldhash",
  "indexmap",
  "serde_core",
  "serde_spanned",

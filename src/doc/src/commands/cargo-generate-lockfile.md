@@ -67,6 +67,16 @@ terminal.</li>
 </dd>
 
 
+<dt class="option-term" id="option-cargo-generate-lockfile---publish-time"><a class="option-anchor" href="#option-cargo-generate-lockfile---publish-time"><code>--publish-time</code> <em>yyyy-mm-ddThh:mm:ssZ</em></a></dt>
+<dd class="option-desc"><p>Latest publish time allowed for registry packages (Unstable)</p>
+<p>This is a best-effort filter on allowed packages, including:</p>
+<ul>
+<li>packages from unsupported registries are always accepted</li>
+<li>only the latest yank status is respected</li>
+</ul>
+</dd>
+
+
 <dt class="option-term" id="option-cargo-generate-lockfile---locked"><a class="option-anchor" href="#option-cargo-generate-lockfile---locked"><code>--locked</code></a></dt>
 <dd class="option-desc"><p>Asserts that the exact same dependencies and versions are used as when the
 existing <code>Cargo.lock</code> file was originally generated. Cargo will exit with an
